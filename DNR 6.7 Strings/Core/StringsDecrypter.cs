@@ -9,212 +9,138 @@ namespace DNR.Core
     public static class StringsDecrypter
     {
         public static int DecryptedStrings { get; private set; }
-        private static byte[] _decryptedStringData;
 
         public static void Execute(Context ctx)
         {
             var logger = ctx.Options.Logger;
-            logger.Info("=== CONFUSEREX FINAL DECRYPTOR ===");
+            logger.Info("=== SIMPLE STRING REPLACEMENT ===");
             
-            // STEP 1: Get the encrypted string data
-            byte[] encryptedData = GetEncryptedStringData(ctx.Module, logger);
-            if (encryptedData == null)
+            // Get the string data array
+            byte[] stringData = GetStringData(ctx.Module);
+            if (stringData == null)
             {
-                logger.Error("No string data found!");
+                logger.Error("No string data!");
                 return;
             }
             
-            logger.Info($"Encrypted data: {encryptedData.Length} bytes");
-            logger.Info($"First 16 bytes: {BitConverter.ToString(encryptedData, 0, Math.Min(16, encryptedData.Length))}");
+            logger.Info($"String data: {stringData.Length} bytes");
             
-            // STEP 2: Try to decrypt the data array
-            _decryptedStringData = TryDecryptDataArray(encryptedData, ctx.Module, logger);
+            // Try to brute force decrypt the data
+            byte[] decryptedData = BruteForceDecrypt(stringData, logger);
             
-            if (_decryptedStringData == null)
+            if (decryptedData != null)
             {
-                logger.Error("Failed to decrypt string data!");
-                logger.Info("Trying to find decryption method...");
-                FindDecryptionMethod(ctx.Module, logger);
-                return;
+                logger.Success($"Successfully decrypted data!");
+                ProcessAllCalls(ctx.Module, decryptedData, logger);
             }
-            
-            logger.Success($"Decrypted data: {_decryptedStringData.Length} bytes");
-            
-            // STEP 3: Now process string calls with decrypted data
-            ProcessStringCalls(ctx.Module, logger);
+            else
+            {
+                logger.Error("Could not decrypt data. Manual analysis needed.");
+            }
             
             logger.Success($"Decrypted {DecryptedStrings} strings!");
         }
         
-        private static byte[] GetEncryptedStringData(ModuleDefMD module, Utils.ILogger logger)
+        private static byte[] GetStringData(ModuleDefMD module)
         {
+            // Get <Module> type
             var moduleType = module.GlobalType;
             if (moduleType == null) return null;
             
+            // Find first non-empty static initial value
             foreach (var field in moduleType.Fields)
             {
-                if (field.IsStatic && field.InitialValue != null)
+                try
                 {
-                    return field.InitialValue;
+                    if (field.InitialValue != null && field.InitialValue.Length > 0)
+                    {
+                        return field.InitialValue;
+                    }
                 }
+                catch { }
             }
             
             return null;
         }
         
-        private static byte[] TryDecryptDataArray(byte[] encryptedData, ModuleDefMD module, Utils.ILogger logger)
+        private static byte[] BruteForceDecrypt(byte[] data, Utils.ILogger logger)
         {
-            // Try common ConfuserEx decryption patterns
+            logger.Info("Trying to decrypt data...");
             
-            // PATTERN 1: Simple XOR with single byte key
+            // Try XOR with all possible single-byte keys
             for (int key = 0; key < 256; key++)
             {
-                byte[] decrypted = new byte[encryptedData.Length];
-                for (int i = 0; i < encryptedData.Length; i++)
+                byte[] test = new byte[data.Length];
+                for (int i = 0; i < data.Length; i++)
                 {
-                    decrypted[i] = (byte)(encryptedData[i] ^ key);
+                    test[i] = (byte)(data[i] ^ key);
                 }
                 
-                // Check if decrypted data contains readable strings
-                if (ContainsReadableStrings(decrypted))
+                // Check if this produces readable strings
+                if (HasReadableContent(test))
                 {
-                    logger.Success($"XOR key {key} (0x{key:X2}) worked!");
-                    return decrypted;
+                    logger.Success($"Found XOR key: 0x{key:X2} ({key})");
+                    return test;
                 }
             }
             
-            // PATTERN 2: XOR with rolling key
-            int[] commonKeys = { 0x2A, 0x7F, 0xFF, 0x2D, 0x5A, 0xA5, 0x55, 0xAA };
+            // Try ADD/SUB with common values
+            int[] adjustments = { 1, 2, 3, 5, 7, 11, 13, 17, 19, 23, 29, 31, 37, 41, 43, 47, 53, 59, 61, 67, 71, 73, 79, 83, 89, 97 };
             
-            foreach (int key in commonKeys)
+            foreach (int adj in adjustments)
             {
-                byte[] decrypted = new byte[encryptedData.Length];
-                for (int i = 0; i < encryptedData.Length; i++)
+                // Try ADD
+                byte[] testAdd = new byte[data.Length];
+                for (int i = 0; i < data.Length; i++)
                 {
-                    decrypted[i] = (byte)(encryptedData[i] ^ (key + i));
+                    testAdd[i] = (byte)((data[i] + adj) & 0xFF);
                 }
                 
-                if (ContainsReadableStrings(decrypted))
+                if (HasReadableContent(testAdd))
                 {
-                    logger.Success($"Rolling XOR key 0x{key:X} worked!");
-                    return decrypted;
-                }
-            }
-            
-            // PATTERN 3: Add/Subtract
-            for (int key = 1; key < 256; key++)
-            {
-                byte[] decrypted = new byte[encryptedData.Length];
-                for (int i = 0; i < encryptedData.Length; i++)
-                {
-                    decrypted[i] = (byte)((encryptedData[i] + key) & 0xFF);
+                    logger.Success($"Found ADD key: {adj}");
+                    return testAdd;
                 }
                 
-                if (ContainsReadableStrings(decrypted))
+                // Try SUB
+                byte[] testSub = new byte[data.Length];
+                for (int i = 0; i < data.Length; i++)
                 {
-                    logger.Success($"ADD key {key} worked!");
-                    return decrypted;
+                    testSub[i] = (byte)((data[i] - adj) & 0xFF);
+                }
+                
+                if (HasReadableContent(testSub))
+                {
+                    logger.Success($"Found SUB key: {adj}");
+                    return testSub;
                 }
             }
             
             return null;
         }
         
-        private static bool ContainsReadableStrings(byte[] data)
+        private static bool HasReadableContent(byte[] data)
         {
-            // Check if data contains readable UTF8 strings
-            int stringCount = 0;
+            // Check first 100 bytes for printable ASCII
+            int printable = 0;
+            int total = Math.Min(100, data.Length);
             
-            for (int i = 0; i < data.Length - 4; i++)
+            for (int i = 0; i < total; i++)
             {
-                // Look for 4-byte length followed by printable chars
-                if (i + 4 < data.Length)
-                {
-                    int length = data[i] | (data[i + 1] << 8) | (data[i + 2] << 16) | (data[i + 3] << 24);
-                    
-                    if (length > 0 && length < 100 && i + 4 + length < data.Length)
-                    {
-                        // Check if the string is readable
-                        bool readable = true;
-                        for (int j = 0; j < length; j++)
-                        {
-                            byte b = data[i + 4 + j];
-                            if (b < 32 && b != 0 && b != 9 && b != 10 && b != 13) // Control chars
-                            {
-                                readable = false;
-                                break;
-                            }
-                        }
-                        
-                        if (readable) stringCount++;
-                        
-                        // Skip this string
-                        i += 4 + length - 1;
-                    }
-                }
+                byte b = data[i];
+                if (b >= 32 && b <= 126) // Printable ASCII
+                    printable++;
+                else if (b == 0 || b == 9 || b == 10 || b == 13) // Common whitespace
+                    printable++;
             }
             
-            return stringCount > 5; // At least 5 readable strings
+            // If more than 70% is printable, it's likely text
+            return (printable * 100 / total) > 70;
         }
         
-        private static void FindDecryptionMethod(ModuleDefMD module, Utils.ILogger logger)
+        private static void ProcessAllCalls(ModuleDefMD module, byte[] stringData, Utils.ILogger logger)
         {
-            logger.Info("=== SEARCHING FOR DECRYPTION METHOD ===");
-            
-            // Look for methods that might decrypt the byte array
-            foreach (var type in module.GetTypes())
-            {
-                foreach (var method in type.Methods)
-                {
-                    if (method.MethodSig != null && method.HasBody)
-                    {
-                        // Check if method accesses the byte array
-                        bool accessesByteArray = false;
-                        
-                        foreach (var instr in method.Body.Instructions)
-                        {
-                            if (instr.OpCode == OpCodes.Ldsfld && instr.Operand is IField field)
-                            {
-                                if (field.DeclaringType.FullName == "<Module>" && field.IsStatic)
-                                {
-                                    accessesByteArray = true;
-                                    break;
-                                }
-                            }
-                        }
-                        
-                        if (accessesByteArray)
-                        {
-                            logger.Info($"Found potential decryptor: {type.Name}.{method.Name}");
-                            logger.Info("Method IL:");
-                            
-                            int count = 0;
-                            foreach (var instr in method.Body.Instructions)
-                            {
-                                count++;
-                                string operand = instr.Operand?.ToString() ?? "";
-                                if (operand.Length > 50) operand = operand.Substring(0, 47) + "...";
-                                logger.Info($"  {instr.OpCode} {operand}");
-                                
-                                if (count > 30)
-                                {
-                                    logger.Info($"  ... {method.Body.Instructions.Count - 30} more instructions");
-                                    break;
-                                }
-                            }
-                            
-                            return; // Just show first one
-                        }
-                    }
-                }
-            }
-        }
-        
-        private static void ProcessStringCalls(ModuleDefMD module, Utils.ILogger logger)
-        {
-            if (_decryptedStringData == null) return;
-            
-            int processed = 0;
+            int totalCalls = 0;
             
             foreach (var type in module.GetTypes())
             {
@@ -224,17 +150,17 @@ namespace DNR.Core
                 {
                     if (method.HasBody)
                     {
-                        processed += ProcessMethodCalls(method, logger);
+                        totalCalls += ProcessMethod(method, stringData, logger);
                     }
                 }
             }
             
-            logger.Info($"Processed {processed} string calls");
+            logger.Info($"Processed {totalCalls} string calls");
         }
         
-        private static int ProcessMethodCalls(MethodDef method, Utils.ILogger logger)
+        private static int ProcessMethod(MethodDef method, byte[] stringData, Utils.ILogger logger)
         {
-            int callsProcessed = 0;
+            int processed = 0;
             var instructions = method.Body.Instructions;
             
             for (int i = 0; i < instructions.Count; i++)
@@ -243,12 +169,12 @@ namespace DNR.Core
                 {
                     int index = instructions[i - 1].GetLdcI4Value();
                     
-                    if (Math.Abs(index) > 1000)
+                    if (Math.Abs(index) > 1000) // Likely string index
                     {
-                        callsProcessed++;
+                        processed++;
                         
-                        // Decrypt using decrypted data
-                        string decrypted = DecryptStringFromData(index);
+                        // Try to get string from data
+                        string decrypted = GetStringFromData(index, stringData);
                         
                         if (!string.IsNullOrEmpty(decrypted))
                         {
@@ -259,49 +185,100 @@ namespace DNR.Core
                             
                             DecryptedStrings++;
                             
-                            if (decrypted.Length > 1)
-                            {
-                                string preview = decrypted.Length > 30 ? 
-                                    decrypted.Substring(0, 27) + "..." : decrypted;
-                                logger.Success($"'{preview}'");
-                            }
+                            // Log it
+                            string preview = decrypted.Length > 30 ? 
+                                decrypted.Substring(0, 27) + "..." : decrypted;
+                            logger.Success($"'{preview}'");
                         }
                     }
                 }
             }
             
-            return callsProcessed;
+            return processed;
         }
         
-        private static string DecryptStringFromData(int index)
+        private static string GetStringFromData(int index, byte[] data)
         {
-            if (_decryptedStringData == null) return null;
+            try
+            {
+                // Try different interpretations of the index
+                
+                // 1. Direct offset
+                if (index >= 0 && index < data.Length)
+                {
+                    string result = ReadStringAtOffset(data, index);
+                    if (result != null) return result;
+                }
+                
+                // 2. Negative = offset from end
+                if (index < 0)
+                {
+                    int positive = data.Length + index;
+                    if (positive >= 0 && positive < data.Length)
+                    {
+                        string result = ReadStringAtOffset(data, positive);
+                        if (result != null) return result;
+                    }
+                }
+                
+                // 3. index * 4 (common in obfuscators)
+                long byteOffset = (long)index * 4L;
+                if (byteOffset < 0) byteOffset = data.Length + byteOffset;
+                
+                if (byteOffset >= 0 && byteOffset < data.Length)
+                {
+                    string result = ReadStringAtOffset(data, (int)byteOffset);
+                    if (result != null) return result;
+                }
+                
+                // 4. Try XOR with common keys
+                int[] xorKeys = { 0x2A, 0x7F, 0xFF, 0x100, 0x55555555 };
+                
+                foreach (int key in xorKeys)
+                {
+                    int decoded = index ^ key;
+                    
+                    if (decoded >= 0 && decoded < data.Length)
+                    {
+                        string result = ReadStringAtOffset(data, decoded);
+                        if (result != null) return result;
+                    }
+                }
+            }
+            catch { }
+            
+            return null;
+        }
+        
+        private static string ReadStringAtOffset(byte[] data, int offset)
+        {
+            if (offset < 0 || offset >= data.Length) return null;
             
             try
             {
-                // ConfuserEx: index is OFFSET / 4
-                int byteOffset = index * 4;
-                
-                // Handle negative
-                if (byteOffset < 0)
+                // Try 4-byte length + UTF8
+                if (offset + 4 <= data.Length)
                 {
-                    byteOffset = _decryptedStringData.Length + byteOffset;
+                    int length = BitConverter.ToInt32(data, offset);
+                    
+                    if (length > 0 && length < 1000 && offset + 4 + length <= data.Length)
+                    {
+                        return Encoding.UTF8.GetString(data, offset + 4, length);
+                    }
                 }
                 
-                if (byteOffset < 0 || byteOffset >= _decryptedStringData.Length)
+                // Try null-terminated
+                for (int i = offset; i < data.Length; i++)
                 {
-                    return null;
-                }
-                
-                // Read 4-byte length
-                int length = _decryptedStringData[byteOffset] | 
-                            (_decryptedStringData[byteOffset + 1] << 8) | 
-                            (_decryptedStringData[byteOffset + 2] << 16) | 
-                            (_decryptedStringData[byteOffset + 3] << 24);
-                
-                if (length > 0 && length < 10000 && byteOffset + 4 + length <= _decryptedStringData.Length)
-                {
-                    return Encoding.UTF8.GetString(_decryptedStringData, byteOffset + 4, length);
+                    if (data[i] == 0)
+                    {
+                        int length = i - offset;
+                        if (length > 0)
+                        {
+                            return Encoding.UTF8.GetString(data, offset, length);
+                        }
+                        break;
+                    }
                 }
             }
             catch { }
