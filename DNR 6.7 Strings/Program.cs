@@ -1,7 +1,6 @@
 ﻿using System.Diagnostics;
 using System.Drawing;
-using Colorful;
-using DNR.Core;
+using Spectre.Console;
 using DNR.Utils;
 
 namespace DNR
