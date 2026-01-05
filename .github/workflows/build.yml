@@ -19,7 +19,7 @@ jobs:
         $proj = Get-ChildItem -Recurse -Filter *.csproj | Select-Object -First 1
         if ($proj) {
           echo "Building project: $($proj.FullName)"
-          dotnet build $proj.FullName --configuration Release
+          dotnet build "DNR 6.7 Strings/DNR 6.7 Strings.csproj" --configuration Release /p:OutputType=Exe
         } else {
           echo "No .csproj file found!"
           exit 1
