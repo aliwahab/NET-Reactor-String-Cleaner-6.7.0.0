@@ -1,23 +1,26 @@
-name: Build and Test
-on: [push, pull_request]
+name: Build
+
+on: [push]
 
 jobs:
   build:
     runs-on: windows-latest
-    
     steps:
     - uses: actions/checkout@v4
     
-    - name: Setup .NET 9
+    - name: Setup .NET
       uses: actions/setup-dotnet@v4
       with:
         dotnet-version: '9.0.x'
     
-    - name: Restore dependencies
-      run: dotnet restore
-    
-    - name: Build
-      run: dotnet build --configuration Release
-      
-    - name: Test (Optional)
-      run: dotnet run --no-build -- try-sample.dll
+    - name: Find and build project
+      run: |
+        # Find the first .csproj file
+        $proj = Get-ChildItem -Recurse -Filter *.csproj | Select-Object -First 1
+        if ($proj) {
+          echo "Building project: $($proj.FullName)"
+          dotnet build $proj.FullName --configuration Release
+        } else {
+          echo "No .csproj file found!"
+          exit 1
+        }
