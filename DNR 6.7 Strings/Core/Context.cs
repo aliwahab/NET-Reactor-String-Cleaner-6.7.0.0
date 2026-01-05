@@ -1,4 +1,5 @@
 using System;
+using System.Reflection;  // ADD THIS LINE
 using dnlib.DotNet;
 using dnlib.DotNet.Writer;
 
@@ -10,21 +11,21 @@ namespace DNR.Core
         {
             Options = ctxOptions;
             
-           
+          
             Module = ModuleDefMD.Load(Options.FilePath);
             
            
             // Asm = Assembly.UnsafeLoadFrom(Options.FilePath);
             
-            // Optional: Set Asm to null or keep for compatibility
+           
             Asm = null;
             
-            Console.WriteLine($"[INFO] Loaded module: {Module.Name}");
+            Console.WriteLine($"[INFO] Loaded: {Module.Name}");
         }
 
         public CtxOptions Options { get; }
         public ModuleDefMD Module { get; }
-        public Assembly Asm { set; get; }  // May be null now
+        public Assembly Asm { get; set; }  // Will be null for .NET 6+ assemblies
 
         public void Save()
         {
