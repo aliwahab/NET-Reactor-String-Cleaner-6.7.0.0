@@ -3,7 +3,7 @@ name: Build and Release
 on:
   push:
     branches: [ main ]
-  workflow_dispatch:  # Allows manual trigger
+  workflow_dispatch:
 
 jobs:
   build:
@@ -21,32 +21,28 @@ jobs:
     - name: Restore dependencies
       run: dotnet restore "DNR 6.7 Strings/DNR 6.7 Strings.csproj"
     
-    - name: Build single-file EXE
+    - name: Publish single-file EXE
       run: |
+        # Create output directory
+        mkdir publish
+        
+        # Publish as single EXE
         dotnet publish "DNR 6.7 Strings/DNR 6.7 Strings.csproj" `
           -c Release `
           -r win-x64 `
           --self-contained false `
           /p:PublishSingleFile=true `
           /p:IncludeNativeLibrariesForSelfExtract=true `
-          /p:DebugType=None `
-          /p:DebugSymbols=false `
-          --output ./publish
+          -o ./publish
         
         echo "=== Built files ==="
         dir ./publish
+        echo "=== File size ==="
+        (Get-Item "./publish/DNR_6.7_Strings.exe").Length | ForEach-Object { "{0:N0} bytes" -f $_ }
     
-    - name: Upload standalone EXE
+    - name: Upload EXE
       uses: actions/upload-artifact@v4
       with:
-        name: DNR-String-Cleaner-Standalone
-        path: |
-          ./publish/DNR_6.7_Strings.exe
+        name: DNR-String-Cleaner
+        path: ./publish/DNR_6.7_Strings.exe
         retention-days: 90
-    
-    - name: Create GitHub Release (on tag)
-      if: startsWith(github.ref, 'refs/tags/')
-      uses: softprops/action-gh-release@v1
-      with:
-        files: ./publish/DNR_6.7_Strings.exe
-        generate_release_notes: true
