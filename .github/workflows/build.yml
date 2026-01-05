@@ -1,4 +1,4 @@
-name: Build
+name: Build and Release
 
 on: [push]
 
@@ -13,14 +13,15 @@ jobs:
       with:
         dotnet-version: '9.0.x'
     
-    - name: Find and build project
-      run: |
-        # Find the first .csproj file
-        $proj = Get-ChildItem -Recurse -Filter *.csproj | Select-Object -First 1
-        if ($proj) {
-          echo "Building project: $($proj.FullName)"
-          dotnet build "DNR 6.7 Strings/DNR 6.7 Strings.csproj" --configuration Release /p:OutputType=Exe
-        } else {
-          echo "No .csproj file found!"
-          exit 1
-        }
+    - name: Build
+      run: dotnet build "DNR 6.7 Strings/DNR 6.7 Strings.csproj" --configuration Release /p:OutputType=Exe
+      
+    - name: Upload EXE as Artifact
+      uses: actions/upload-artifact@v4
+      with:
+        name: DNR-String-Cleaner
+        path: |
+          DNR 6.7 Strings/bin/Release/net9.0/DNR_6.7_Strings.exe
+          DNR 6.7 Strings/bin/Release/net9.0/dnlib.dll
+          DNR 6.7 Strings/bin/Release/net9.0/0Harmony.dll
+        retention-days: 7
