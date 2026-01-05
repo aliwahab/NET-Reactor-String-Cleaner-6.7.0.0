@@ -24,7 +24,8 @@ namespace DNR.Core
             }
             
             logger.Success($"String data: {stringData.Length} bytes");
-            
+            string hex = BitConverter.ToString(stringData, 0, Math.Min(100, stringData.Length));
+            logger.Info($"Data start: {hex}");
             // STEP 2: Find decryptor methods
             var decryptors = FindDecryptors(ctx.Module);
             logger.Info($"Found {decryptors.Count} decryptors");
