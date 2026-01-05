@@ -23,10 +23,10 @@ jobs:
     
     - name: Publish single-file EXE
       run: |
-        # Create output directory
-        mkdir publish
+        # Create publish directory
+        New-Item -ItemType Directory -Force -Path "./publish"
         
-        # Publish as single EXE
+        # Build and publish
         dotnet publish "DNR 6.7 Strings/DNR 6.7 Strings.csproj" `
           -c Release `
           -r win-x64 `
@@ -35,10 +35,14 @@ jobs:
           /p:IncludeNativeLibrariesForSelfExtract=true `
           -o ./publish
         
-        echo "=== Built files ==="
-        dir ./publish
-        echo "=== File size ==="
-        (Get-Item "./publish/DNR_6.7_Strings.exe").Length | ForEach-Object { "{0:N0} bytes" -f $_ }
+        echo "=== Verification ==="
+        if (Test-Path "./publish/DNR_6.7_Strings.exe") {
+          $size = (Get-Item "./publish/DNR_6.7_Strings.exe").Length
+          echo "SUCCESS: EXE created ($($size/1MB -as [int]) MB)"
+        } else {
+          echo "ERROR: EXE not created!"
+          Get-ChildItem ./publish -Recurse
+        }
     
     - name: Upload EXE
       uses: actions/upload-artifact@v4
