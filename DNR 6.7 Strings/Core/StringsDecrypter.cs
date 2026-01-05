@@ -13,277 +13,293 @@ namespace DNR.Core
         public static void Execute(Context ctx)
         {
             var logger = ctx.Options.Logger;
-            logger.Info("=== SIMPLE STRING REPLACEMENT ===");
+            logger.Info("=== STRING DECRYPTION ANALYZER ===");
             
-            // Get the string data array
-            byte[] stringData = GetStringData(ctx.Module);
-            if (stringData == null)
+            // Get the encrypted data
+            byte[] encryptedData = GetEncryptedData(ctx.Module);
+            if (encryptedData == null)
             {
-                logger.Error("No string data!");
+                logger.Error("No encrypted data found!");
                 return;
             }
             
-            logger.Info($"String data: {stringData.Length} bytes");
+            logger.Info($"Encrypted data: {encryptedData.Length} bytes");
+            logger.Info($"First 32 bytes (hex): {BitConverter.ToString(encryptedData, 0, Math.Min(32, encryptedData.Length))}");
+            logger.Info("");
             
-            // Try to brute force decrypt the data
-            byte[] decryptedData = BruteForceDecrypt(stringData, logger);
+            // STEP 1: Analyze the data structure
+            AnalyzeDataStructure(encryptedData, logger);
             
-            if (decryptedData != null)
-            {
-                logger.Success($"Successfully decrypted data!");
-                ProcessAllCalls(ctx.Module, decryptedData, logger);
-            }
-            else
-            {
-                logger.Error("Could not decrypt data. Manual analysis needed.");
-            }
+            // STEP 2: Find and analyze decryption methods
+            FindDecryptionMethods(ctx.Module, logger);
             
-            logger.Success($"Decrypted {DecryptedStrings} strings!");
+            // STEP 3: Find all string calls
+            FindStringCalls(ctx.Module, logger);
+            
+            logger.Info("");
+            logger.Info("=== ANALYSIS COMPLETE ===");
+            logger.Info($"Found string calls but need decryption algorithm.");
         }
         
-        private static byte[] GetStringData(ModuleDefMD module)
+        private static byte[] GetEncryptedData(ModuleDefMD module)
         {
-            // Get <Module> type
             var moduleType = module.GlobalType;
             if (moduleType == null) return null;
             
-            // Find first non-empty static initial value
             foreach (var field in moduleType.Fields)
             {
-                try
+                if (field.InitialValue != null && field.InitialValue.Length > 0)
                 {
-                    if (field.InitialValue != null && field.InitialValue.Length > 0)
+                    return field.InitialValue;
+                }
+            }
+            
+            return null;
+        }
+        
+        private static void AnalyzeDataStructure(byte[] data, Utils.ILogger logger)
+        {
+            logger.Info("=== DATA STRUCTURE ANALYSIS ===");
+            
+            // Count byte frequencies
+            int[] freq = new int[256];
+            foreach (byte b in data) freq[b]++;
+            
+            // Find most common bytes
+            logger.Info("Most common bytes:");
+            for (int i = 0; i < 10; i++)
+            {
+                int maxIndex = 0;
+                int maxValue = 0;
+                for (int j = 0; j < 256; j++)
+                {
+                    if (freq[j] > maxValue)
                     {
-                        return field.InitialValue;
+                        maxValue = freq[j];
+                        maxIndex = j;
                     }
                 }
-                catch { }
+                
+                if (maxValue > 0)
+                {
+                    logger.Info($"  Byte 0x{maxIndex:X2} ({maxIndex}): {maxValue} times ({maxValue * 100 / data.Length}%)");
+                    freq[maxIndex] = 0; // Remove for next iteration
+                }
             }
             
-            return null;
+            // Check for patterns that might indicate encryption type
+            logger.Info("");
+            logger.Info("Encryption analysis:");
+            
+            // If data is mostly high bytes, might be XOR encrypted
+            int highBytes = data.Count(b => b > 127);
+            logger.Info($"High bytes (>127): {highBytes} ({highBytes * 100 / data.Length}%)");
+            
+            // Check for common XOR patterns
+            logger.Info("Testing common XOR patterns:");
+            
+            byte[] commonXorBytes = { 0x00, 0xFF, 0xAA, 0x55, 0x2A, 0x7F, 0x2D, 0x5A, 0xA5 };
+            
+            foreach (byte xorKey in commonXorBytes)
+            {
+                int printable = 0;
+                for (int i = 0; i < Math.Min(100, data.Length); i++)
+                {
+                    byte decrypted = (byte)(data[i] ^ xorKey);
+                    if (decrypted >= 32 && decrypted <= 126) printable++;
+                }
+                
+                if (printable > 70) // More than 70% printable
+                {
+                    logger.Info($"  XOR 0x{xorKey:X2}: {printable}% printable - POSSIBLE");
+                }
+            }
         }
         
-        private static byte[] BruteForceDecrypt(byte[] data, Utils.ILogger logger)
+        private static void FindDecryptionMethods(ModuleDefMD module, Utils.ILogger logger)
         {
-            logger.Info("Trying to decrypt data...");
+            logger.Info("");
+            logger.Info("=== FINDING DECRYPTION METHODS ===");
             
-            // Try XOR with all possible single-byte keys
-            for (int key = 0; key < 256; key++)
+            // Look in <Module> for methods that might decrypt strings
+            var moduleType = module.GlobalType;
+            if (moduleType == null) return;
+            
+            int methodCount = 0;
+            
+            foreach (var method in moduleType.Methods)
             {
-                byte[] test = new byte[data.Length];
-                for (int i = 0; i < data.Length; i++)
+                if (method.MethodSig != null && method.MethodSig.Params.Count == 1)
                 {
-                    test[i] = (byte)(data[i] ^ key);
-                }
-                
-                // Check if this produces readable strings
-                if (HasReadableContent(test))
-                {
-                    logger.Success($"Found XOR key: 0x{key:X2} ({key})");
-                    return test;
+                    var paramType = method.MethodSig.Params[0];
+                    if (paramType.FullName == "System.Int32" || paramType.FullName == "System.UInt32")
+                    {
+                        methodCount++;
+                        logger.Info($"");
+                        logger.Info($"Method #{methodCount}: {method.Name}");
+                        logger.Info($"Returns: {method.MethodSig.RetType.FullName}");
+                        logger.Info($"Parameter: {paramType.FullName}");
+                        
+                        if (method.HasBody)
+                        {
+                            logger.Info("First 20 instructions:");
+                            int instrCount = 0;
+                            
+                            foreach (var instr in method.Body.Instructions)
+                            {
+                                instrCount++;
+                                string operand = instr.Operand?.ToString() ?? "";
+                                
+                                // Shorten long strings
+                                if (operand.Length > 60)
+                                    operand = operand.Substring(0, 57) + "...";
+                                
+                                logger.Info($"  {instr.OpCode} {operand}");
+                                
+                                if (instrCount >= 20)
+                                {
+                                    logger.Info($"  ... and {method.Body.Instructions.Count - 20} more");
+                                    break;
+                                }
+                            }
+                            
+                            // Analyze what this method does
+                            AnalyzeMethodLogic(method, logger);
+                        }
+                        
+                        // Only show first 3 methods
+                        if (methodCount >= 3) break;
+                    }
                 }
             }
             
-            // Try ADD/SUB with common values
-            int[] adjustments = { 1, 2, 3, 5, 7, 11, 13, 17, 19, 23, 29, 31, 37, 41, 43, 47, 53, 59, 61, 67, 71, 73, 79, 83, 89, 97 };
-            
-            foreach (int adj in adjustments)
+            if (methodCount == 0)
             {
-                // Try ADD
-                byte[] testAdd = new byte[data.Length];
-                for (int i = 0; i < data.Length; i++)
-                {
-                    testAdd[i] = (byte)((data[i] + adj) & 0xFF);
-                }
-                
-                if (HasReadableContent(testAdd))
-                {
-                    logger.Success($"Found ADD key: {adj}");
-                    return testAdd;
-                }
-                
-                // Try SUB
-                byte[] testSub = new byte[data.Length];
-                for (int i = 0; i < data.Length; i++)
-                {
-                    testSub[i] = (byte)((data[i] - adj) & 0xFF);
-                }
-                
-                if (HasReadableContent(testSub))
-                {
-                    logger.Success($"Found SUB key: {adj}");
-                    return testSub;
-                }
+                logger.Info("No int-taking methods found in <Module>");
             }
-            
-            return null;
         }
         
-        private static bool HasReadableContent(byte[] data)
+        private static void AnalyzeMethodLogic(MethodDef method, Utils.ILogger logger)
         {
-            // Check first 100 bytes for printable ASCII
-            int printable = 0;
-            int total = Math.Min(100, data.Length);
+            var instructions = method.Body.Instructions;
             
-            for (int i = 0; i < total; i++)
+            // Look for patterns
+            bool loadsByteArray = false;
+            bool callsGetString = false;
+            bool usesXor = false;
+            bool usesMath = false;
+            bool usesBitConverter = false;
+            
+            foreach (var instr in instructions)
             {
-                byte b = data[i];
-                if (b >= 32 && b <= 126) // Printable ASCII
-                    printable++;
-                else if (b == 0 || b == 9 || b == 10 || b == 13) // Common whitespace
-                    printable++;
+                if (instr.OpCode == OpCodes.Ldsfld)
+                {
+                    if (instr.Operand != null && instr.Operand.ToString().Contains("Byte[]"))
+                    {
+                        loadsByteArray = true;
+                    }
+                }
+                else if (instr.OpCode == OpCodes.Call || instr.OpCode == OpCodes.Callvirt)
+                {
+                    if (instr.Operand != null)
+                    {
+                        string operand = instr.Operand.ToString();
+                        if (operand.Contains("GetString") || operand.Contains("Encoding"))
+                        {
+                            callsGetString = true;
+                        }
+                        else if (operand.Contains("Math.") || operand.Contains("BitConverter."))
+                        {
+                            usesMath = true;
+                        }
+                    }
+                }
+                else if (instr.OpCode.Code == Code.Xor)
+                {
+                    usesXor = true;
+                }
             }
             
-            // If more than 70% is printable, it's likely text
-            return (printable * 100 / total) > 70;
+            logger.Info("Method analysis:");
+            if (loadsByteArray) logger.Info("  - Loads a byte array");
+            if (callsGetString) logger.Info("  - Calls string decoding methods");
+            if (usesXor) logger.Info("  - Uses XOR operations");
+            if (usesMath) logger.Info("  - Uses Math/BitConverter functions");
         }
         
-        private static void ProcessAllCalls(ModuleDefMD module, byte[] stringData, Utils.ILogger logger)
+        private static void FindStringCalls(ModuleDefMD module, Utils.ILogger logger)
         {
-            int totalCalls = 0;
+            logger.Info("");
+            logger.Info("=== FINDING STRING CALLS ===");
             
+            int callCount = 0;
+            int uniqueIndices = 0;
+            var seenIndices = new System.Collections.Generic.HashSet<int>();
+            
+            // Sample some string calls to understand pattern
             foreach (var type in module.GetTypes())
             {
                 if (!type.HasMethods) continue;
                 
                 foreach (var method in type.Methods)
                 {
-                    if (method.HasBody)
-                    {
-                        totalCalls += ProcessMethod(method, stringData, logger);
-                    }
-                }
-            }
-            
-            logger.Info($"Processed {totalCalls} string calls");
-        }
-        
-        private static int ProcessMethod(MethodDef method, byte[] stringData, Utils.ILogger logger)
-        {
-            int processed = 0;
-            var instructions = method.Body.Instructions;
-            
-            for (int i = 0; i < instructions.Count; i++)
-            {
-                if (instructions[i].OpCode == OpCodes.Call && i > 0 && instructions[i - 1].IsLdcI4())
-                {
-                    int index = instructions[i - 1].GetLdcI4Value();
+                    if (!method.HasBody) continue;
                     
-                    if (Math.Abs(index) > 1000) // Likely string index
+                    var instructions = method.Body.Instructions;
+                    
+                    for (int i = 0; i < instructions.Count; i++)
                     {
-                        processed++;
-                        
-                        // Try to get string from data
-                        string decrypted = GetStringFromData(index, stringData);
-                        
-                        if (!string.IsNullOrEmpty(decrypted))
+                        if (instructions[i].OpCode == OpCodes.Call && i > 0 && instructions[i - 1].IsLdcI4())
                         {
-                            // Replace the call
-                            instructions[i - 1].OpCode = OpCodes.Nop;
-                            instructions[i].OpCode = OpCodes.Ldstr;
-                            instructions[i].Operand = decrypted;
+                            int index = instructions[i - 1].GetLdcI4Value();
                             
-                            DecryptedStrings++;
-                            
-                            // Log it
-                            string preview = decrypted.Length > 30 ? 
-                                decrypted.Substring(0, 27) + "..." : decrypted;
-                            logger.Success($"'{preview}'");
+                            if (Math.Abs(index) > 1000)
+                            {
+                                callCount++;
+                                
+                                if (!seenIndices.Contains(index))
+                                {
+                                    seenIndices.Add(index);
+                                    uniqueIndices++;
+                                    
+                                    // Log first 10 unique indices
+                                    if (uniqueIndices <= 10)
+                                    {
+                                        var calledMethod = instructions[i].Operand as IMethod;
+                                        string methodName = calledMethod?.FullName ?? "unknown";
+                                        
+                                        if (methodName.Length > 50)
+                                            methodName = methodName.Substring(0, 47) + "...";
+                                        
+                                        logger.Info($"Index: {index} (0x{index:X8}) -> {methodName}");
+                                    }
+                                }
+                            }
                         }
                     }
                 }
             }
             
-            return processed;
-        }
-        
-        private static string GetStringFromData(int index, byte[] data)
-        {
-            try
+            logger.Info($"");
+            logger.Info($"Found {callCount} total string calls");
+            logger.Info($"Found {uniqueIndices} unique string indices");
+            
+            // Show index statistics
+            if (seenIndices.Count > 0)
             {
-                // Try different interpretations of the index
+                int min = seenIndices.Min();
+                int max = seenIndices.Max();
+                int avg = (int)seenIndices.Average();
                 
-                // 1. Direct offset
-                if (index >= 0 && index < data.Length)
-                {
-                    string result = ReadStringAtOffset(data, index);
-                    if (result != null) return result;
-                }
+                logger.Info($"Index range: {min} to {max}");
+                logger.Info($"Average index: {avg}");
                 
-                // 2. Negative = offset from end
-                if (index < 0)
-                {
-                    int positive = data.Length + index;
-                    if (positive >= 0 && positive < data.Length)
-                    {
-                        string result = ReadStringAtOffset(data, positive);
-                        if (result != null) return result;
-                    }
-                }
+                // Count positive vs negative
+                int positive = seenIndices.Count(i => i > 0);
+                int negative = seenIndices.Count(i => i < 0);
                 
-                // 3. index * 4 (common in obfuscators)
-                long byteOffset = (long)index * 4L;
-                if (byteOffset < 0) byteOffset = data.Length + byteOffset;
-                
-                if (byteOffset >= 0 && byteOffset < data.Length)
-                {
-                    string result = ReadStringAtOffset(data, (int)byteOffset);
-                    if (result != null) return result;
-                }
-                
-                // 4. Try XOR with common keys
-                int[] xorKeys = { 0x2A, 0x7F, 0xFF, 0x100, 0x55555555 };
-                
-                foreach (int key in xorKeys)
-                {
-                    int decoded = index ^ key;
-                    
-                    if (decoded >= 0 && decoded < data.Length)
-                    {
-                        string result = ReadStringAtOffset(data, decoded);
-                        if (result != null) return result;
-                    }
-                }
+                logger.Info($"Positive indices: {positive}, Negative indices: {negative}");
             }
-            catch { }
-            
-            return null;
-        }
-        
-        private static string ReadStringAtOffset(byte[] data, int offset)
-        {
-            if (offset < 0 || offset >= data.Length) return null;
-            
-            try
-            {
-                // Try 4-byte length + UTF8
-                if (offset + 4 <= data.Length)
-                {
-                    int length = BitConverter.ToInt32(data, offset);
-                    
-                    if (length > 0 && length < 1000 && offset + 4 + length <= data.Length)
-                    {
-                        return Encoding.UTF8.GetString(data, offset + 4, length);
-                    }
-                }
-                
-                // Try null-terminated
-                for (int i = offset; i < data.Length; i++)
-                {
-                    if (data[i] == 0)
-                    {
-                        int length = i - offset;
-                        if (length > 0)
-                        {
-                            return Encoding.UTF8.GetString(data, offset, length);
-                        }
-                        break;
-                    }
-                }
-            }
-            catch { }
-            
-            return null;
         }
     }
 }
