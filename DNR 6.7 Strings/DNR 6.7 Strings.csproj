@@ -3,21 +3,24 @@
     <TargetFramework>net9.0</TargetFramework>
     <OutputType>Exe</OutputType>
     <Nullable>disable</Nullable>
-    <ImplicitUsings>enable</ImplicitUsings>
     
-    <!-- Keep original names -->
+    <!-- CRITICAL: Create single file EXE -->
+    <PublishSingleFile>true</PublishSingleFile>
+    <IncludeAllContentForSelfExtract>true</IncludeAllContentForSelfExtract>
+    
+    <!-- Generate proper EXE, not host -->
+    <UseAppHost>true</UseAppHost>
+    
+    <!-- Optional: Make smaller -->
+    <PublishTrimmed>true</PublishTrimmed>
+    <TrimMode>link</TrimMode>
+    
     <RootNamespace>DNR</RootNamespace>
     <AssemblyName>DNR_6.7_Strings</AssemblyName>
   </PropertyGroup>
 
   <ItemGroup>
-    <!-- Update dnlib to .NET Standard 2.0+ version -->
     <PackageReference Include="dnlib" Version="3.6.0" />
-    
-    <!-- Update Harmony for .NET 9 compatibility -->
     <PackageReference Include="Lib.Harmony" Version="2.3.3" />
-    
-    <!-- Colorful.Console may need replacement -->
-    <PackageReference Include="Spectre.Console" Version="0.49.1" />
   </ItemGroup>
 </Project>
