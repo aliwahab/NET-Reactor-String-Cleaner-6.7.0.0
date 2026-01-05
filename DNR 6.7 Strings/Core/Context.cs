@@ -1,4 +1,4 @@
-﻿using System.Reflection;
+using System;
 using dnlib.DotNet;
 using dnlib.DotNet.Writer;
 
@@ -9,13 +9,22 @@ namespace DNR.Core
         public Context(CtxOptions ctxOptions)
         {
             Options = ctxOptions;
+            
+           
             Module = ModuleDefMD.Load(Options.FilePath);
-            Asm = Assembly.UnsafeLoadFrom(Options.FilePath);
+            
+           
+            // Asm = Assembly.UnsafeLoadFrom(Options.FilePath);
+            
+            // Optional: Set Asm to null or keep for compatibility
+            Asm = null;
+            
+            Console.WriteLine($"[INFO] Loaded module: {Module.Name}");
         }
 
         public CtxOptions Options { get; }
         public ModuleDefMD Module { get; }
-        public Assembly Asm { set; get; }
+        public Assembly Asm { set; get; }  // May be null now
 
         public void Save()
         {
@@ -29,6 +38,7 @@ namespace DNR.Core
             };
 
             Module.Write(Options.OutputPath, writerOptions);
+            Console.WriteLine($"[INFO] Saved to: {Options.OutputPath}");
         }
     }
 }
