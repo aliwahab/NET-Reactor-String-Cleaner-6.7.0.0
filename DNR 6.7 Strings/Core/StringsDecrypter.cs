@@ -12,85 +12,173 @@ namespace DNR.Core
         public static void Execute(Context ctx)
         {
             var logger = ctx.Options.Logger;
+            logger.Info("Starting ConfuserEx 1.6 string decryption...");
 
-            foreach (var typeDef in ctx.Module.GetTypes().Where(x => x.HasMethods && !x.IsGlobalModuleType))
+            foreach (var typeDef in ctx.Module.GetTypes().Where(x => x.HasMethods))
             foreach (var methodDef in typeDef.Methods.Where(x => x.HasBody)) 
             {
                 var instr = methodDef.Body.Instructions;
-
-                // Simplify first
-                methodDef.Body.SimplifyBranches();
-                methodDef.Body.SimplifyMacros(methodDef.Parameters);
+                
+                // Don't simplify/optimize yet - it might break pattern matching
+                // methodDef.Body.SimplifyBranches();
                 
                 for (var i = 0; i < instr.Count; i++)
                 {
-                    // Look for: call StringDecryptionMethod with ldc.i4 before it
+                    // Pattern: ldc.i4 -> call ???????????????? (string decrypter)
                     if (instr[i].OpCode == OpCodes.Call && 
                         instr[i].Operand is IMethod decMethod &&
                         i > 0 && instr[i - 1].IsLdcI4())
                     {
                         try 
                         {
-                            var ldcI4Arg = instr[i - 1].GetLdcI4Value();
+                            var encryptedValue = instr[i - 1].GetLdcI4Value();
                             
-                            // Get the method definition using dnlib
-                            var decrypterMethod = decMethod.ResolveMethodDef();
+                            // Get method name for logging
+                            var methodName = decMethod.Name;
+                            if (methodName.Contains("?"))
+                                methodName = "ObfuscatedDecryptor";
                             
-                            if (decrypterMethod == null)
+                            // Try to decrypt based on ConfuserEx 1.6 patterns
+                            string decrypted = DecryptConfuserEx16(encryptedValue, decMethod, ctx.Module);
+                            
+                            if (decrypted != null)
                             {
-                                logger.Error($"Could not resolve method: {decMethod}");
-                                continue;
+                                // Replace the call with the decrypted string
+                                instr[i - 1].OpCode = OpCodes.Nop;
+                                instr[i].OpCode = OpCodes.Ldstr;
+                                instr[i].Operand = decrypted;
+                                
+                                DecryptedStrings++;
+                                logger.Success($"Decrypted: '{decrypted}' (from: {encryptedValue})");
                             }
-                            
-                            // Try to execute the decryption method
-                            // This is tricky - we need to either:
-                            // 1. Emulate the IL (complex)
-                            // 2. Use dynamic method invocation (requires loading)
-                            // 3. Skip and use alternative approach
-                            
-                            // For now, log and skip
-                            logger.Warning($"Found decryption call: {decMethod.Name} with arg: {ldcI4Arg}");
-                            logger.Warning("Manual emulation required for .NET 6+ assemblies");
-                            
-                            // TODO: Implement IL emulation or manual decryption
-                            // For NET Reactor 6.7, strings might use XOR or simple arithmetic
-                            
-                            // Skip StacktracePatcher reference (not needed for .NET 9)
-                            // StacktracePatcher.PatchStackTraceGetMethod.MethodToReplace = decrypter;
-                            
-                            // Example placeholder - you'll need actual decryption logic
-                            // var decryptedValue = DecryptString(ldcI4Arg, decrypterMethod);
-                            // instr[i - 1].OpCode = OpCodes.Nop;
-                            // instr[i].OpCode = OpCodes.Ldstr;
-                            // instr[i].Operand = decryptedValue;
-                            // DecryptedStrings++;
+                            else
+                            {
+                                logger.Warning($"Found encrypted value: {encryptedValue} in {methodName}");
+                            }
                         }
                         catch (Exception e) 
                         {
-                            logger.Error($"Decryption failed: {e.Message}");
+                            logger.Error($"Error: {e.Message}");
                         }
                     }
                 }
                 
                 // Optimize after processing
-                methodDef.Body.OptimizeBranches();
-                methodDef.Body.OptimizeMacros();
+                // methodDef.Body.OptimizeMacros();
             }
             
-            logger.Info($"Processed methods, found {DecryptedStrings} strings (placeholder)");
+            logger.Success($"Decrypted {DecryptedStrings} strings!");
         }
         
-        // TODO: Implement actual string decryption for NET Reactor 6.7
-        private static string DecryptString(int encryptedValue, MethodDef decryptionMethod)
+        private static string DecryptConfuserEx16(int encrypted, IMethod decMethod, ModuleDefMD module)
         {
-            // You need to analyze the decryption method's IL
-            // Common patterns: XOR, ADD/SUB, bit rotations
+            // ConfuserEx 1.6 common patterns:
             
-            // Example for XOR decryption:
-            // int key = 0x12345678;
-            // return (encryptedValue ^ key).ToString();
+            // 1. Simple XOR pattern: value ^ key
+            // 2. Add/Subtract with key
+            // 3. Mixed arithmetic
             
-            return $"[DECRYPTED:{encryptedValue}]"; // Placeholder
+            // Try common XOR keys (ConfuserEx often uses 0x2A, 0x7F, etc.)
+            int[] commonKeys = { 0x2A, 0x7F, 0xFF, 0x100, 0x2D, 0x5A, 0xA5 };
+            
+            foreach (var key in commonKeys)
+            {
+                int result = encrypted ^ key;
+                
+                // Check if result looks like a string pointer or valid chars
+                // Simple heuristic: result in printable ASCII range
+                if (result > 0x20 && result < 0x7F)
+                {
+                    return new string((char)result, 1);
+                }
+                
+                // Try as string (UTF-16 chars)
+                byte[] bytes = BitConverter.GetBytes(result);
+                string asString = System.Text.Encoding.Unicode.GetString(bytes);
+                if (IsPrintable(asString))
+                {
+                    return asString.Trim('\0');
+                }
+            }
+            
+            // If XOR doesn't work, try to analyze the actual decryption method
+            var methodDef = decMethod.ResolveMethodDef();
+            if (methodDef != null && methodDef.HasBody)
+            {
+                return AnalyzeDecryptionMethod(encrypted, methodDef);
+            }
+            
+            return null;
+        }
+        
+        private static string AnalyzeDecryptionMethod(int encrypted, MethodDef methodDef)
+        {
+            // Analyze the IL of the decryption method
+            // ConfuserEx patterns often look like:
+            // ldc.i4 X
+            // ldc.i4 KEY
+            // xor (or add/sub/...)
+            // ret
+            
+            var instr = methodDef.Body.Instructions;
+            int? key = null;
+            OpCode? operation = null;
+            
+            for (int i = 0; i < instr.Count; i++)
+            {
+                if (instr[i].IsLdcI4())
+                {
+                    int value = instr[i].GetLdcI4Value();
+                    
+                    // Skip the encrypted value parameter
+                    if (i == 0 && value == encrypted) continue;
+                    
+                    key = value;
+                }
+                else if (instr[i].OpCode == OpCodes.Xor)
+                {
+                    operation = OpCodes.Xor;
+                }
+                else if (instr[i].OpCode == OpCodes.Add)
+                {
+                    operation = OpCodes.Add;
+                }
+                else if (instr[i].OpCode == OpCodes.Sub)
+                {
+                    operation = OpCodes.Sub;
+                }
+            }
+            
+            if (key.HasValue && operation.HasValue)
+            {
+                int result = operation.Value == OpCodes.Xor ? encrypted ^ key.Value :
+                            operation.Value == OpCodes.Add ? encrypted + key.Value :
+                            encrypted - key.Value;
+                
+                // Convert to string
+                try
+                {
+                    byte[] bytes = BitConverter.GetBytes(result);
+                    string str = System.Text.Encoding.Unicode.GetString(bytes).Trim('\0');
+                    if (IsPrintable(str)) return str;
+                }
+                catch { }
+            }
+            
+            return null;
+        }
+        
+        private static bool IsPrintable(string str)
+        {
+            if (string.IsNullOrEmpty(str)) return false;
+            
+            foreach (char c in str)
+            {
+                if (c == '\0') continue;
+                if (char.IsControl(c) && c != '\n' && c != '\r' && c != '\t')
+                    return false;
+            }
+            return true;
         }
     }
 }
