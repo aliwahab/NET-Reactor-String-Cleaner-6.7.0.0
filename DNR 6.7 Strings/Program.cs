@@ -23,7 +23,8 @@ namespace DNR
         public static void Main(string[] args)
         {
             Console.Title = "DNR 6.7.0.0 Strings decrypter";
-            Console.WriteLine(asciiArt, Color.IndianRed);
+            Console.WriteLine("DNR .NET Reactor String Cleaner");
+            Console.WriteLine("================================");
 
             var logger = new Logger();
             var stopwatch = Stopwatch.StartNew();
