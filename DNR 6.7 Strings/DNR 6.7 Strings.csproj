@@ -16,8 +16,5 @@
     
     <!-- Update Harmony for .NET 9 compatibility -->
     <PackageReference Include="Lib.Harmony" Version="2.3.3" />
-    
-    <!-- Colorful.Console may need replacement -->
-   <PackageReference Include="Spectre.Console" Version="0.49.1" />
   </ItemGroup>
 </Project>
