@@ -1,4 +1,5 @@
 using System;
+using System.Collections.Generic;
 using System.Linq;
 using System.Text;
 using dnlib.DotNet;
@@ -9,111 +10,38 @@ namespace DNR.Core
     public static class StringsDecrypter
     {
         public static int DecryptedStrings { get; private set; }
+        private static byte[] _encryptedData;
+        private static Dictionary<string, Func<int, string>> _decryptionMethods = new Dictionary<string, Func<int, string>>();
 
         public static void Execute(Context ctx)
         {
             var logger = ctx.Options.Logger;
-            logger.Info("=== CONFUSEREX STRING DECRYPTION ===");
+            logger.Info("=== ADVANCED STRING DECRYPTION ===");
             
-            // STEP 1: Find the encrypted byte array
-            byte[] encryptedData = FindEncryptedByteArray(ctx.Module, logger);
-            if (encryptedData == null)
+            // Find ALL encrypted data arrays
+            FindAllEncryptedArrays(ctx.Module, logger);
+            
+            if (_encryptedData == null)
             {
-                logger.Error("CRITICAL: Could not find encrypted byte array!");
-                logger.Info("Searching for alternative array...");
-                DebugFindAllArrays(ctx.Module, logger);
+                logger.Error("No encrypted data found!");
                 return;
             }
             
-            logger.Success($"Found encrypted data: {encryptedData.Length} bytes");
+            // Find ALL string decryption methods
+            FindStringDecryptionMethods(ctx.Module, logger);
             
-            // STEP 2: Process all string decryption calls
-            int processed = 0;
+            logger.Success($"Found {_decryptionMethods.Count} decryption methods");
+            logger.Success($"Data size: {_encryptedData.Length} bytes");
             
-            foreach (var typeDef in ctx.Module.GetTypes().Where(x => x.HasMethods))
-            foreach (var methodDef in typeDef.Methods.Where(x => x.HasBody)) 
-            {
-                var instructions = methodDef.Body.Instructions;
-                
-                for (int i = 0; i < instructions.Count; i++)
-                {
-                    if (instructions[i].OpCode == OpCodes.Call && 
-                        instructions[i].Operand is IMethod decMethod &&
-                        i > 0 && instructions[i - 1].IsLdcI4())
-                    {
-                        processed++;
-                        int index = instructions[i - 1].GetLdcI4Value();
-                        
-                        // Only process if it's likely a real string (not small index)
-                        if (Math.Abs(index) > 1000 || index < 0)
-                        {
-                            try
-                            {
-                                string decrypted = DecryptConfuserExString(index, encryptedData);
-                                
-                                if (decrypted != null && decrypted.Length > 0)
-                                {
-                                    // Replace: ldc.i4 VALUE -> call DECRYPTION
-                                    // With:    nop         -> ldstr "DECRYPTED"
-                                    instructions[i - 1].OpCode = OpCodes.Nop;
-                                    instructions[i].OpCode = OpCodes.Ldstr;
-                                    instructions[i].Operand = decrypted;
-                                    
-                                    DecryptedStrings++;
-                                    
-                                    // Log interesting strings
-                                    if (decrypted.Length > 1)
-                                    {
-                                        string preview = decrypted.Length > 50 ? 
-                                            decrypted.Substring(0, 47) + "..." : decrypted;
-                                        logger.Success($"[{index}] '{preview}'");
-                                    }
-                                }
-                                else
-                                {
-                                    logger.Warning($"[{index}] Failed to decrypt");
-                                }
-                            }
-                            catch (Exception ex)
-                            {
-                                logger.Error($"[{index}] Error: {ex.Message}");
-                            }
-                        }
-                        else
-                        {
-                            // Small values - try simple XOR for array indices
-                            TryDecryptSmallValue(index, instructions, i, logger);
-                        }
-                    }
-                }
-            }
+            // Process the entire module
+            ProcessModule(ctx, logger);
             
-            logger.Info($"");
-            logger.Info($"=== PROCESSING COMPLETE ===");
-            logger.Info($"Total calls processed: {processed}");
-            logger.Info($"Strings decrypted: {DecryptedStrings}");
+            logger.Success($"Total strings decrypted: {DecryptedStrings}");
         }
         
-        private static byte[] FindEncryptedByteArray(ModuleDefMD module, Utils.ILogger logger)
+        private static void FindAllEncryptedArrays(ModuleDefMD module, Utils.ILogger logger)
         {
-            // Method 1: Look in <Module> class (most common)
-            var moduleType = module.GlobalType;
-            if (moduleType != null)
-            {
-                foreach (var field in moduleType.Fields)
-                {
-                    if (field.FieldType.FullName == "System.Byte[]" && 
-                        field.IsStatic && 
-                        field.InitialValue != null &&
-                        field.InitialValue.Length > 1024) // Should be large
-                    {
-                        logger.Info($"Found in <Module>: {field.Name} ({field.InitialValue.Length} bytes)");
-                        return field.InitialValue;
-                    }
-                }
-            }
-            
-            // Method 2: Search all types
+            // Look for ALL static byte arrays
             foreach (var type in module.GetTypes())
             {
                 foreach (var field in type.Fields)
@@ -122,57 +50,83 @@ namespace DNR.Core
                         field.IsStatic && 
                         field.InitialValue != null)
                     {
-                        // Check if it looks like string data (has null bytes, printable chars)
-                        int printable = 0;
-                        foreach (byte b in field.InitialValue)
-                        {
-                            if (b >= 32 && b <= 126 || b == 0) printable++;
-                        }
+                        logger.Info($"Found array: {type.Name}.{field.Name} ({field.InitialValue.Length} bytes)");
                         
-                        if (printable > field.InitialValue.Length * 0.3) // 30% printable
+                        // Use the LARGEST array (likely contains strings)
+                        if (_encryptedData == null || field.InitialValue.Length > _encryptedData.Length)
                         {
-                            logger.Info($"Candidate: {type.Name}.{field.Name} ({field.InitialValue.Length} bytes)");
-                            return field.InitialValue;
+                            _encryptedData = field.InitialValue;
                         }
                     }
                 }
             }
-            
-            return null;
         }
         
-        private static string DecryptConfuserExString(int index, byte[] data)
+        private static void FindStringDecryptionMethods(ModuleDefMD module, Utils.ILogger logger)
         {
-            // Handle negative indices (common in ConfuserEx)
-            if (index < 0)
-                index = data.Length + index; // Convert to positive offset from end
+            // Look for methods that take int and return string
+            foreach (var type in module.GetTypes())
+            {
+                foreach (var method in type.Methods)
+                {
+                    if (method.MethodSig != null &&
+                        method.MethodSig.RetType.FullName == "System.String" &&
+                        method.MethodSig.Params.Count == 1 &&
+                        method.MethodSig.Params[0].FullName == "System.Int32")
+                    {
+                        // This could be a string decryption method!
+                        string key = $"{type.FullName}::{method.Name}";
+                        
+                        // Analyze the method to understand its algorithm
+                        if (AnalyzeDecryptionMethod(method))
+                        {
+                            _decryptionMethods[key] = (index) => DecryptUsingMethod(index, method);
+                            logger.Info($"Found decryption method: {method.Name}");
+                        }
+                    }
+                }
+            }
+        }
+        
+        private static bool AnalyzeDecryptionMethod(MethodDef method)
+        {
+            if (!method.HasBody) return false;
             
-            // Check bounds
-            if (index < 0 || index + 4 >= data.Length)
-                return $"[ERROR: Index {index} out of bounds]";
+            // Check for common patterns in the IL
+            var instr = method.Body.Instructions;
+            bool usesByteArray = false;
+            bool usesEncoding = false;
             
+            foreach (var il in instr)
+            {
+                if (il.OpCode == OpCodes.Ldsfld && il.Operand is IField field)
+                {
+                    if (field.FieldType.FullName == "System.Byte[]")
+                        usesByteArray = true;
+                }
+                else if (il.OpCode == OpCodes.Call && il.Operand is IMethod called)
+                {
+                    if (called.FullName.Contains("Encoding::") || called.FullName.Contains("GetString"))
+                        usesEncoding = true;
+                }
+            }
+            
+            return usesByteArray && usesEncoding;
+        }
+        
+        private static string DecryptUsingMethod(int index, MethodDef method)
+        {
             try
             {
-                // Read 4-byte length (little-endian) as discovered in IL
-                int length = data[index] | 
-                            (data[index + 1] << 8) | 
-                            (data[index + 2] << 16) | 
-                            (data[index + 3] << 24);
+                // Generic decryption based on common patterns
+                if (index < 0)
+                    index = _encryptedData.Length + index;
                 
-                // Validate length
-                if (length <= 0 || length > 65536) // Reasonable string limit
-                    return $"[ERROR: Invalid length {length}]";
+                if (index < 0 || index >= _encryptedData.Length)
+                    return $"[ERROR: Index {index}]";
                 
-                if (index + 4 + length > data.Length)
-                    return $"[ERROR: Length {length} exceeds array bounds]";
-                
-                // Decode as UTF8
-                string result = Encoding.UTF8.GetString(data, index + 4, length);
-                
-                // Clean up null characters
-                result = result.Replace("\0", "");
-                
-                return result;
+                // Try different patterns
+                return TryPattern1(index) ?? TryPattern2(index) ?? $"[UNKNOWN: {index}]";
             }
             catch
             {
@@ -180,67 +134,120 @@ namespace DNR.Core
             }
         }
         
-        private static void TryDecryptSmallValue(int value, IList<Instruction> instructions, int index, Utils.ILogger logger)
+        private static string TryPattern1(int index)
         {
-            // Small values are likely array indices or simple XOR
-            int[] keys = { 0x2A, 0x7F, 0xFF, 0x2D };
+            // Pattern 1: 4-byte length + UTF8 data
+            if (index + 4 >= _encryptedData.Length) return null;
             
-            foreach (var key in keys)
+            int length = _encryptedData[index] | 
+                        (_encryptedData[index + 1] << 8) | 
+                        (_encryptedData[index + 2] << 16) | 
+                        (_encryptedData[index + 3] << 24);
+            
+            if (length > 0 && index + 4 + length <= _encryptedData.Length)
             {
-                int test = value ^ key;
-                if (test >= 32 && test <= 126) // Printable ASCII
+                return Encoding.UTF8.GetString(_encryptedData, index + 4, length).Replace("\0", "");
+            }
+            
+            return null;
+        }
+        
+        private static string TryPattern2(int index)
+        {
+            // Pattern 2: Null-terminated UTF8 string
+            for (int i = index; i < _encryptedData.Length; i++)
+            {
+                if (_encryptedData[i] == 0)
                 {
-                    string decrypted = new string((char)test, 1);
+                    int length = i - index;
+                    if (length > 0)
+                    {
+                        return Encoding.UTF8.GetString(_encryptedData, index, length);
+                    }
+                    return null;
+                }
+            }
+            return null;
+        }
+        
+        private static void ProcessModule(Context ctx, Utils.ILogger logger)
+        {
+            // Find ALL calls to string decryption methods and replace them
+            foreach (var typeDef in ctx.Module.GetTypes())
+            {
+                if (!typeDef.HasMethods) continue;
+                
+                foreach (var methodDef in typeDef.Methods)
+                {
+                    if (!methodDef.HasBody) continue;
                     
-                    instructions[index - 1].OpCode = OpCodes.Nop;
-                    instructions[index].OpCode = OpCodes.Ldstr;
-                    instructions[index].Operand = decrypted;
-                    
-                    DecryptedStrings++;
-                    return;
+                    ProcessMethod(methodDef, logger);
                 }
             }
         }
         
-        private static void DebugFindAllArrays(ModuleDefMD module, Utils.ILogger logger)
+        private static void ProcessMethod(MethodDef method, Utils.ILogger logger)
         {
-            logger.Info("=== ALL BYTE ARRAYS IN MODULE ===");
+            var instructions = method.Body.Instructions;
             
-            int arrayCount = 0;
-            
-            foreach (var type in module.GetTypes())
+            for (int i = 0; i < instructions.Count; i++)
             {
-                foreach (var field in type.Fields)
+                // Look for: call string METHOD(int32)
+                if (instructions[i].OpCode == OpCodes.Call && 
+                    instructions[i].Operand is IMethod calledMethod)
                 {
-                    if (field.FieldType.FullName == "System.Byte[]")
+                    // Check if this is a known decryption method
+                    string methodKey = $"{calledMethod.DeclaringType.FullName}::{calledMethod.Name}";
+                    
+                    if (_decryptionMethods.ContainsKey(methodKey))
                     {
-                        arrayCount++;
-                        logger.Info($"#{arrayCount}: {type.Name}.{field.Name}");
-                        
-                        if (field.InitialValue != null)
+                        // Find the integer argument (should be ldc.i4 before call)
+                        int argIndex = FindIntegerArgument(instructions, i);
+                        if (argIndex >= 0)
                         {
-                            logger.Info($"  Size: {field.InitialValue.Length} bytes");
+                            int stringIndex = instructions[argIndex].GetLdcI4Value();
                             
-                            // Show first 32 bytes as hex
-                            int showBytes = Math.Min(32, field.InitialValue.Length);
-                            StringBuilder hex = new StringBuilder();
-                            for (int i = 0; i < showBytes; i++)
+                            try
                             {
-                                hex.Append($"{field.InitialValue[i]:X2} ");
-                                if ((i + 1) % 16 == 0) hex.AppendLine();
+                                string decrypted = _decryptionMethods[methodKey](stringIndex);
+                                
+                                if (!string.IsNullOrEmpty(decrypted))
+                                {
+                                    // Replace: ldc.i4 -> call
+                                    // With:    nop    -> ldstr
+                                    instructions[argIndex].OpCode = OpCodes.Nop;
+                                    instructions[i].OpCode = OpCodes.Ldstr;
+                                    instructions[i].Operand = decrypted;
+                                    
+                                    DecryptedStrings++;
+                                    
+                                    if (decrypted.Length > 1)
+                                    {
+                                        string preview = decrypted.Length > 30 ? 
+                                            decrypted.Substring(0, 27) + "..." : decrypted;
+                                        logger.Success($"Decrypted: '{preview}'");
+                                    }
+                                }
                             }
-                            logger.Info($"  Hex: {hex}");
-                            
-                            // Try to detect if it's string data
-                            int nulls = field.InitialValue.Count(b => b == 0);
-                            int printables = field.InitialValue.Count(b => b >= 32 && b <= 126);
-                            logger.Info($"  Stats: {nulls} nulls, {printables} printables");
+                            catch (Exception ex)
+                            {
+                                logger.Error($"Failed to decrypt {stringIndex}: {ex.Message}");
+                            }
                         }
                     }
                 }
             }
-            
-            logger.Info($"Total byte arrays found: {arrayCount}");
+        }
+        
+        private static int FindIntegerArgument(IList<Instruction> instructions, int callIndex)
+        {
+            // Look backward from the call for ldc.i4
+            for (int i = callIndex - 1; i >= 0 && i >= callIndex - 5; i--)
+            {
+                if (instructions[i].IsLdcI4())
+                    return i;
+            }
+            return -1;
         }
     }
 }
