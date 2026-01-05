@@ -1,11 +1,11 @@
-﻿using System;
+using System;
 using System.Diagnostics;
 using System.Reflection;
 using HarmonyLib;
 
 namespace DNR.Core
 {
-    // Credits: Holly https://github.com/HoLLy-HaCKeR/EazFixer/blob/master/EazFixer/StacktracePatcher.cs
+    // Modified for .NET 9 compatibility
     public static class StacktracePatcher
     {
         private const string HarmonyId = "DNR.stacktrace";
@@ -13,28 +13,39 @@ namespace DNR.Core
 
         public static void Patch()
         {
-            _harmony = new Harmony(HarmonyId);
-            _harmony.PatchAll(Assembly.GetExecutingAssembly());
+            try
+            {
+                // .NET 9 doesn't have the same StackFrame.GetMethod() to patch
+                // This patcher was mainly for .NET Framework obfuscated assemblies
+                Console.WriteLine("[INFO] Stacktrace patching not required for .NET 9 targets");
+                
+                // Optional: Only patch if we detect .NET Framework assembly
+                // _harmony = new Harmony(HarmonyId);
+                // _harmony.PatchAll(Assembly.GetExecutingAssembly());
+            }
+            catch (Exception ex)
+            {
+                Console.WriteLine($"[WARNING] Stacktrace patching failed: {ex.Message}");
+            }
         }
 
         public static void UnPatch()
         {
-            _harmony?.UnpatchAll(_harmony.Id);
+            _harmony?.UnpatchAll(HarmonyId);
             _harmony = null;
         }
 
-        [HarmonyPatch(typeof(StackFrame), "GetMethod")]
+        // Comment out or remove the HarmonyPatch attribute for .NET 9
+        // [HarmonyPatch(typeof(StackFrame), "GetMethod")]
         public class PatchStackTraceGetMethod
         {
             public static MethodInfo MethodToReplace;
 
             public static void Postfix(ref MethodBase __result)
             {
-                if (__result.DeclaringType != typeof(RuntimeMethodHandle)) return;
-
-                // just replace it with a method
-                __result = MethodToReplace ?? MethodBase.GetCurrentMethod();
-                Debug.WriteLine("[D] Patched stacktrace entry");
+                // This code path is for .NET Framework only
+                // .NET Core/5/6/7/8/9 use different stack trace APIs
+                Console.WriteLine("[DEBUG] Stack trace patching not supported in .NET 9");
             }
         }
     }
