@@ -39,14 +39,14 @@ namespace DNR
             }
 
             // FIXED: These classes now available via "using DNR.Core;"
-            StacktracePatcher.Patch();
+           // StacktracePatcher.Patch();
 
             var options = new CtxOptions(args[0], logger);
             var ctx = new Context(options);
             
             logger.Warning("Use control flow remover first!");
             logger.Info("Executing memory patches...");
-            StacktracePatcher.Patch();
+           // StacktracePatcher.Patch();
 
             StringsDecrypter.Execute(ctx);
             ctx.Save();
