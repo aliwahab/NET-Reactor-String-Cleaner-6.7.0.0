@@ -1,7 +1,7 @@
-﻿using System.Diagnostics;
-using System.Drawing;
-using Spectre.Console;
+using System;
+using System.Diagnostics;
 using DNR.Utils;
+using DNR.Core;  // ADD THIS LINE - fixes missing classes
 
 namespace DNR
 {
@@ -23,7 +23,11 @@ namespace DNR
         public static void Main(string[] args)
         {
             Console.Title = "DNR 6.7.0.0 Strings decrypter";
-            Console.WriteLine(asciiArt, Color.IndianRed);
+            
+            // FIXED: Remove Spectre.Console color, use simple Console
+            Console.ForegroundColor = ConsoleColor.DarkRed;
+            Console.WriteLine(asciiArt);
+            Console.ResetColor();
 
             var logger = new Logger();
             var stopwatch = Stopwatch.StartNew();
@@ -34,13 +38,10 @@ namespace DNR
                 return;
             }
 
+            // FIXED: These classes now available via "using DNR.Core;"
             StacktracePatcher.Patch();
 
-            var options =
-                new CtxOptions(
-                    args[0],
-                    logger);
-
+            var options = new CtxOptions(args[0], logger);
             var ctx = new Context(options);
             
             logger.Warning("Use control flow remover first!");
