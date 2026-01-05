@@ -13,25 +13,42 @@ namespace DNR.Core
         public static void Execute(Context ctx)
         {
             var logger = ctx.Options.Logger;
-            logger.Info("=== CONFUSEREX STRING DECRYPTOR ===");
+            logger.Info("=== STRING DECRYPTION ===");
             
-            // STEP 1: Find and analyze string decryption calls
-            int callsFound = FindAndLogStringCalls(ctx.Module, logger);
-            
-            logger.Info($"Total string calls found: {callsFound}");
-            
-            // STEP 2: Try to decrypt using common patterns
-            if (callsFound > 0)
+            // STEP 1: Get string data from <Module>
+            byte[] stringData = GetModuleStringData(ctx.Module);
+            if (stringData == null)
             {
-                TryDecryptStrings(ctx.Module, logger);
+                logger.Error("No string data found!");
+                return;
             }
+            
+            logger.Info($"String data: {stringData.Length} bytes");
+            
+            // STEP 2: Process all methods for string calls
+            ProcessAllMethods(ctx.Module, stringData, logger);
             
             logger.Success($"Decrypted {DecryptedStrings} strings!");
         }
         
-        private static int FindAndLogStringCalls(ModuleDefMD module, Utils.ILogger logger)
+        private static byte[] GetModuleStringData(ModuleDefMD module)
         {
-            logger.Info("=== SEARCHING FOR STRING CALLS ===");
+            var moduleType = module.GlobalType;
+            if (moduleType == null) return null;
+            
+            foreach (var field in moduleType.Fields)
+            {
+                if (field.IsStatic && field.InitialValue != null && field.InitialValue.Length > 0)
+                {
+                    return field.InitialValue;
+                }
+            }
+            
+            return null;
+        }
+        
+        private static void ProcessAllMethods(ModuleDefMD module, byte[] stringData, Utils.ILogger logger)
+        {
             int totalCalls = 0;
             
             foreach (var type in module.GetTypes())
@@ -40,165 +57,36 @@ namespace DNR.Core
                 
                 foreach (var method in type.Methods)
                 {
-                    if (!method.HasBody) continue;
-                    
-                    totalCalls += LogMethodStringCalls(type, method, logger);
+                    if (method.HasBody)
+                    {
+                        totalCalls += ProcessMethod(method, stringData, logger);
+                    }
                 }
             }
             
-            return totalCalls;
+            logger.Info($"Processed {totalCalls} string calls");
         }
         
-        private static int LogMethodStringCalls(TypeDef type, MethodDef method, Utils.ILogger logger)
+        private static int ProcessMethod(MethodDef method, byte[] stringData, Utils.ILogger logger)
         {
             int callsInMethod = 0;
             var instructions = method.Body.Instructions;
             
             for (int i = 0; i < instructions.Count; i++)
             {
-                // Look for: ldc.i4 -> call
                 if (instructions[i].OpCode == OpCodes.Call && i > 0 && instructions[i - 1].IsLdcI4())
                 {
                     int index = instructions[i - 1].GetLdcI4Value();
-                    var calledMethod = instructions[i].Operand as IMethod;
                     
                     // Large values are likely string indices
-                    if (Math.Abs(index) > 1000 && calledMethod != null)
+                    if (Math.Abs(index) > 1000)
                     {
                         callsInMethod++;
                         
-                        logger.Info($"");
-                        logger.Info($"Call #{callsInMethod} in {type.Name}.{method.Name}:");
-                        logger.Info($"  Index: {index} (0x{index:X8})");
-                        logger.Info($"  Calls: {calledMethod.FullName}");
-                        
-                        // If it's in <Module> class, it's definitely string decryption
-                        if (calledMethod.DeclaringType.FullName == "<Module>")
-                        {
-                            logger.Warning($"  CONFIRMED: <Module> string decryptor!");
-                            
-                            // Try to analyze this specific method
-                            AnalyzeDecryptorMethod(calledMethod, logger);
-                        }
-                    }
-                }
-            }
-            
-            return callsInMethod;
-        }
-        
-        private static void AnalyzeDecryptorMethod(IMethod method, Utils.ILogger logger)
-        {
-            try
-            {
-                var methodDef = method.ResolveMethodDef();
-                if (methodDef != null && methodDef.HasBody)
-                {
-                    logger.Info($"  Method IL analysis:");
-                    
-                    int instructionCount = 0;
-                    foreach (var instr in methodDef.Body.Instructions)
-                    {
-                        instructionCount++;
-                        string operand = instr.Operand?.ToString() ?? "";
-                        
-                        // Shorten long strings
-                        if (operand.Length > 50)
-                            operand = operand.Substring(0, 47) + "...";
-                        
-                        logger.Info($"    {instr.OpCode} {operand}");
-                        
-                        // Just show first 20 instructions
-                        if (instructionCount >= 20)
-                        {
-                            logger.Info($"    ... and {methodDef.Body.Instructions.Count - 20} more");
-                            break;
-                        }
-                    }
-                }
-                else
-                {
-                    logger.Info($"  Could not resolve method body");
-                }
-            }
-            catch (Exception ex)
-            {
-                logger.Error($"  Error analyzing: {ex.Message}");
-            }
-        }
-        
-        private static void TryDecryptStrings(ModuleDefMD module, Utils.ILogger logger)
-        {
-            logger.Info("");
-            logger.Info("=== ATTEMPTING DECRYPTION ===");
-            
-            // Get string data from <Module>
-            byte[] stringData = GetModuleStringData(module, logger);
-            if (stringData == null)
-            {
-                logger.Error("No string data found in <Module>");
-                return;
-            }
-            
-            logger.Info($"String data size: {stringData.Length} bytes");
-            
-            // Process all methods again, this time trying to decrypt
-            foreach (var type in module.GetTypes())
-            {
-                if (!type.HasMethods) continue;
-                
-                foreach (var method in type.Methods)
-                {
-                    if (method.HasBody)
-                    {
-                        ProcessMethodForDecryption(method, stringData, logger);
-                    }
-                }
-            }
-        }
-        
-        private static byte[] GetModuleStringData(ModuleDefMD module, Utils.ILogger logger)
-        {
-            var moduleType = module.GlobalType;
-            if (moduleType == null) return null;
-            
-            foreach (var field in moduleType.Fields)
-            {
-                // Check if it's a static field with initial value
-                if (field.IsStatic && field.InitialValue != null)
-                {
-                    // Log all static fields for debugging
-                    logger.Info($"Found static field: {field.Name} - {field.InitialValue.Length} bytes");
-                    
-                    // Return the first non-empty array
-                    if (field.InitialValue.Length > 0)
-                    {
-                        return field.InitialValue;
-                    }
-                }
-            }
-            
-            return null;
-        }
-        
-        private static void ProcessMethodForDecryption(MethodDef method, byte[] stringData, Utils.ILogger logger)
-        {
-            var instructions = method.Body.Instructions;
-            
-            for (int i = 0; i < instructions.Count; i++)
-            {
-                if (instructions[i].OpCode == OpCodes.Call && i > 0 && instructions[i - 1].IsLdcI4())
-                {
-                    int index = instructions[i - 1].GetLdcI4Value();
-                    var calledMethod = instructions[i].Operand as IMethod;
-                    
-                    if (Math.Abs(index) > 1000 && calledMethod != null && 
-                        calledMethod.DeclaringType.FullName == "<Module>")
-                    {
                         // Try to decrypt
-                        string decrypted = DecryptStringIndex(index, stringData);
+                        string decrypted = DecryptString(index, stringData);
                         
-                        if (!string.IsNullOrEmpty(decrypted) && decrypted.Length > 0)
+                        if (!string.IsNullOrEmpty(decrypted))
                         {
                             // Replace the call with the string
                             instructions[i - 1].OpCode = OpCodes.Nop;
@@ -207,42 +95,49 @@ namespace DNR.Core
                             
                             DecryptedStrings++;
                             
-                            // Log success
+                            // Log it
                             string preview = decrypted.Length > 30 ? 
                                 decrypted.Substring(0, 27) + "..." : decrypted;
-                            logger.Success($"Decrypted: '{preview}'");
+                            logger.Success($"'{preview}'");
+                        }
+                        else
+                        {
+                            // Log failed attempts
+                            logger.Info($"Failed index: {index}");
                         }
                     }
                 }
             }
+            
+            return callsInMethod;
         }
         
-        private static string DecryptStringIndex(int index, byte[] data)
+        private static string DecryptString(int index, byte[] data)
         {
             try
             {
-                // COMMON CONFUSEREX PATTERNS:
-                
-                // Pattern 1: Index is byte offset (for small values)
+                // METHOD 1: Try as direct byte offset
                 if (index >= 0 && index < data.Length)
                 {
-                    return TryReadStringAtOffset(data, index);
+                    string result = ReadStringFromData(data, index);
+                    if (result != null) return result;
                 }
                 
-                // Pattern 2: Negative index = offset from end
+                // METHOD 2: Try negative as offset from end
                 if (index < 0)
                 {
                     int positiveIndex = data.Length + index;
                     if (positiveIndex >= 0 && positiveIndex < data.Length)
                     {
-                        return TryReadStringAtOffset(data, positiveIndex);
+                        string result = ReadStringFromData(data, positiveIndex);
+                        if (result != null) return result;
                     }
                 }
                 
-                // Pattern 3: Index * 4 = byte offset (common in ConfuserEx)
-                int byteOffset = index * 4;
+                // METHOD 3: Try index * 4 (common in ConfuserEx)
+                long byteOffset = (long)index * 4L;
                 
-                // Handle overflow/negative
+                // Handle negative/overflow
                 if (byteOffset < 0)
                 {
                     byteOffset = data.Length + byteOffset;
@@ -250,20 +145,21 @@ namespace DNR.Core
                 
                 if (byteOffset >= 0 && byteOffset < data.Length)
                 {
-                    return TryReadStringAtOffset(data, byteOffset);
+                    string result = ReadStringFromData(data, (int)byteOffset);
+                    if (result != null) return result;
                 }
                 
-                // Pattern 4: Try XOR with common keys
-                int[] xorKeys = { 0x2A, 0x7F, 0xFF, 0x100, 0x55555555, 0xAAAAAAAA };
+                // METHOD 4: Try XOR with common keys
+                int[] xorKeys = { 0x2A, 0x7F, 0xFF, 0x100, 0x2D, 0x5A, 0xA5 };
                 
                 foreach (int key in xorKeys)
                 {
                     int decoded = index ^ key;
                     
-                    // Try as direct offset
+                    // Try as positive offset
                     if (decoded >= 0 && decoded < data.Length)
                     {
-                        string result = TryReadStringAtOffset(data, decoded);
+                        string result = ReadStringFromData(data, decoded);
                         if (result != null) return result;
                     }
                     
@@ -273,13 +169,13 @@ namespace DNR.Core
                         int positive = data.Length + decoded;
                         if (positive >= 0 && positive < data.Length)
                         {
-                            string result = TryReadStringAtOffset(data, positive);
+                            string result = ReadStringFromData(data, positive);
                             if (result != null) return result;
                         }
                     }
                 }
             }
-            catch (Exception)
+            catch
             {
                 return null;
             }
@@ -287,15 +183,16 @@ namespace DNR.Core
             return null;
         }
         
-        private static string TryReadStringAtOffset(byte[] data, int offset)
+        private static string ReadStringFromData(byte[] data, int offset)
         {
             if (offset < 0 || offset >= data.Length) return null;
             
             try
             {
-                // Try 4-byte length + UTF8
+                // Pattern 1: 4-byte length + UTF8 string
                 if (offset + 4 <= data.Length)
                 {
+                    // FIXED: Use BitConverter to avoid uint/int issues
                     int length = BitConverter.ToInt32(data, offset);
                     
                     if (length > 0 && length < 1000 && offset + 4 + length <= data.Length)
@@ -305,7 +202,7 @@ namespace DNR.Core
                     }
                 }
                 
-                // Try null-terminated string
+                // Pattern 2: Null-terminated string
                 for (int i = offset; i < data.Length; i++)
                 {
                     if (data[i] == 0)
@@ -313,23 +210,27 @@ namespace DNR.Core
                         int length = i - offset;
                         if (length > 0)
                         {
-                            return Encoding.UTF8.GetString(data, offset, length);
+                            string result = Encoding.UTF8.GetString(data, offset, length);
+                            return CleanString(result);
                         }
                         break;
                     }
                 }
                 
-                // Try as raw ASCII
+                // Pattern 3: Try to read as ASCII until null
                 int maxLength = Math.Min(100, data.Length - offset);
                 string ascii = Encoding.ASCII.GetString(data, offset, maxLength);
-                ascii = ascii.Split('\0')[0]; // Take until first null
+                ascii = ascii.Split('\0')[0];
                 
-                if (ascii.Length > 0 && IsReadableAscii(ascii))
+                if (ascii.Length > 0 && IsPrintable(ascii))
                 {
                     return ascii;
                 }
             }
-            catch { }
+            catch
+            {
+                return null;
+            }
             
             return null;
         }
@@ -338,20 +239,19 @@ namespace DNR.Core
         {
             if (string.IsNullOrEmpty(str)) return str;
             
-            // Remove control characters
-            var result = new StringBuilder();
+            var cleaned = new StringBuilder();
             foreach (char c in str)
             {
                 if (c == '\0') continue;
                 if (char.IsControl(c) && c != '\n' && c != '\r' && c != '\t')
                     continue;
-                result.Append(c);
+                cleaned.Append(c);
             }
             
-            return result.ToString().Trim();
+            return cleaned.ToString().Trim();
         }
         
-        private static bool IsReadableAscii(string str)
+        private static bool IsPrintable(string str)
         {
             foreach (char c in str)
             {
